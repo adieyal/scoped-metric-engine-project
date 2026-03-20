@@ -31,6 +31,7 @@ It delegates domain-specific interpretation to your application code through:
    :maxdepth: 2
    :caption: How-To Guides:
 
+   howto/translate-english-queries
    howto/define-metric-registry
    howto/implement-fetchers
    howto/configure-population
