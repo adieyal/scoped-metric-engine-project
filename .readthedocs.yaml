@@ -5,11 +5,10 @@ build:
     python: "3.11"
   jobs:
     post_checkout:
-      - python -m pip install -e .[docs]
+      - python3 -m pip install -e '.[docs]'
 sphinx:
   configuration: docs/conf.py
   fail_on_warning: false
 python:
   install:
     - requirements: docs/requirements.txt
-
