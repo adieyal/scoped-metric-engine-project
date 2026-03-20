@@ -25,3 +25,8 @@ A domain-neutral library for resolving primitive and derived metrics over canoni
 pip install -e .[dev]
 pytest
 ```
+
+## Documentation
+
+- Source docs: [docs/](docs/)
+- API and usage docs are built with Sphinx for Read the Docs compatibility.
