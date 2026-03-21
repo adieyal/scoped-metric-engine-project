@@ -6,8 +6,10 @@ from datetime import date
 import pytest
 
 from scoped_metric_engine.aggregation import AggregationPolicyRegistry, MetricAggregationPolicy
+from scoped_metric_engine.dependency_resolver import MetricEngineAdapter
 from scoped_metric_engine.engine import ScopedMetricEngine
 from scoped_metric_engine.fact_store import InMemoryFactStore
+from scoped_metric_engine.fetch_request import FetchRequest
 from scoped_metric_engine.fetchers import FetchResponse, PrimitiveFactFetcher, RawFetchRow
 from scoped_metric_engine.group_key import GroupKey
 from scoped_metric_engine.metric_metadata import (
@@ -33,47 +35,63 @@ class FakeFinancialValue:
     def is_none(self):
         return self.value is None
 
+    def as_float(self):
+        return float(self.value) if self.value is not None else None
+
     def get_provenance(self):
         return self._prov
 
 
-class FakeMetricEngine:
-    def get_dependencies(self, metric_name: str) -> set[str]:
-        mapping = {
-            "gross_profit": {"revenue", "cogs"},
-            "gross_margin": {"gross_profit", "revenue", "cogs"},
-        }
-        return mapping.get(metric_name, set())
+class FakeMetricEngine(MetricEngineAdapter):
+    _deps = {
+        "gross_profit": {"revenue", "cogs"},
+        "gross_margin": {"gross_profit", "revenue", "cogs"},
+    }
 
-    def calculate_many(self, targets: set[str], ctx=None, allow_partial=True, policy=None):
+    def get_dependencies(self, target: str) -> set[str]:
+        return self._deps.get(target, set())
+
+    def inputs_needed_for(self, targets: set[str] | list[str]) -> set[str]:
+        leaf_inputs = {
+            "gross_profit": {"revenue", "cogs"},
+            "gross_margin": {"revenue", "cogs"},
+        }
+        out: set[str] = set()
+        for target in targets:
+            out |= leaf_inputs.get(target, {target})
+        return out
+
+    def calculate_many(self, targets: set[str], ctx=None, *, policy=None, allow_partial=True, **kwargs):
         ctx = ctx or {}
         out = {}
         for target in targets:
-            if target == "units_sold":
-                out[target] = FakeFinancialValue(ctx.get("units_sold"), FakeProv("input:units_sold"))
-            elif target == "revenue":
-                out[target] = FakeFinancialValue(ctx.get("revenue"), FakeProv("input:revenue"))
-            elif target == "cogs":
-                out[target] = FakeFinancialValue(ctx.get("cogs"), FakeProv("input:cogs"))
-            elif target == "gross_profit":
-                revenue = ctx.get("revenue")
-                cogs = ctx.get("cogs")
-                value = None if revenue is None or cogs is None else revenue - cogs
-                out[target] = FakeFinancialValue(value, FakeProv("calc:gross_profit"))
-            elif target == "gross_margin":
-                revenue = ctx.get("revenue")
-                cogs = ctx.get("cogs")
-                if revenue in (None, 0) or cogs is None:
-                    value = None
-                else:
-                    value = (revenue - cogs) / revenue
-                out[target] = FakeFinancialValue(value, FakeProv("calc:gross_margin"))
-            else:
-                out[target] = FakeFinancialValue(None, FakeProv(f"calc:{target}"))
+            out[target] = self._calculate_one(target, ctx)
         return out
 
+    def calculate(self, target: str, ctx=None, *, policy=None, allow_partial=True, **kwargs):
+        ctx = ctx or {}
+        return self._calculate_one(target, ctx)
 
-class FakePopulationResolver:
+    def _calculate_one(self, target, ctx):
+        if target in ("units_sold", "revenue", "cogs"):
+            return FakeFinancialValue(ctx.get(target), FakeProv(f"input:{target}"))
+        if target == "gross_profit":
+            revenue = ctx.get("revenue")
+            cogs = ctx.get("cogs")
+            value = None if revenue is None or cogs is None else revenue - cogs
+            return FakeFinancialValue(value, FakeProv("calc:gross_profit"))
+        if target == "gross_margin":
+            revenue = ctx.get("revenue")
+            cogs = ctx.get("cogs")
+            if revenue in (None, 0) or cogs is None:
+                value = None
+            else:
+                value = (revenue - cogs) / revenue
+            return FakeFinancialValue(value, FakeProv("calc:gross_margin"))
+        return FakeFinancialValue(None, FakeProv(f"calc:{target}"))
+
+
+class FakePopulationResolver(PopulationResolver):
     def resolve_population(self, scope: Scope, population: PopulationSpec):
         if scope.resolution_grain.dimensions == ():
             return []
@@ -86,10 +104,10 @@ class FakePopulationResolver:
         ]
 
 
-class SalesFetcher:
+class SalesFetcher(PrimitiveFactFetcher):
     family = "sales"
 
-    def fetch(self, request):
+    def fetch(self, request: FetchRequest) -> FetchResponse:
         return FetchResponse(
             request=request,
             rows=[
@@ -107,10 +125,10 @@ class SalesFetcher:
         )
 
 
-class CostsFetcher:
+class CostsFetcher(PrimitiveFactFetcher):
     family = "costs"
 
-    def fetch(self, request):
+    def fetch(self, request: FetchRequest) -> FetchResponse:
         return FetchResponse(
             request=request,
             rows=[
@@ -182,7 +200,12 @@ def aggregation_policies():
 @pytest.fixture
 def grouped_scope():
     return Scope(
-        slice=Slice(entity_ids=(2, 1), start_date=date(2026, 2, 1), end_date=date(2026, 2, 28), filters=(("b", 2), ("a", 1))),
+        slice=Slice(
+            entity_ids=(2, 1),
+            start_date=date(2026, 2, 1),
+            end_date=date(2026, 2, 28),
+            filters=(("b", 2), ("a", 1)),
+        ),
         resolution_grain=ResolutionGrain(("item",)),
     )
 

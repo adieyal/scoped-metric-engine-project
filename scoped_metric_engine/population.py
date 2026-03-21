@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping, Protocol, Sequence
+from typing import Protocol
 
 from .group_key import GroupKey
 from .scope import Scope
@@ -24,5 +25,4 @@ class PopulationResolver(Protocol):
         self,
         scope: Scope,
         population: PopulationSpec,
-    ) -> Sequence[PopulationRow]:
-        ...
+    ) -> Sequence[PopulationRow]: ...

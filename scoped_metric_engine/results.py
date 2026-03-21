@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 from .group_key import GroupKey
 from .issues import ResolutionIssue
@@ -13,7 +14,7 @@ from .types import Completeness
 
 @dataclass
 class ResultRow:
-    group_key: GroupKey
+    group_key: GroupKey | None
     dimensions: Mapping[str, Any]
     metrics: Mapping[str, Any]
     completeness: Completeness

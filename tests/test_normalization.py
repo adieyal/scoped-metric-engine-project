@@ -14,7 +14,11 @@ def test_normalization_creates_atomic_facts_and_dimensions(grouped_scope):
     response = FetchResponse(
         request=request,
         rows=[
-            RawFetchRow(group_dimensions={"item_id": 1}, dimensions={"name": "Alpha"}, metrics={"revenue": 100, "units_sold": 10})
+            RawFetchRow(
+                group_dimensions={"item_id": 1},
+                dimensions={"name": "Alpha"},
+                metrics={"revenue": 100, "units_sold": 10},
+            )
         ],
     )
     facts, row_dimensions = normalize_fetch_response_to_facts(grouped_scope, response, population_mode="observed")

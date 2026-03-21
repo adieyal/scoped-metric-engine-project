@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 
 def canonicalize_group_dimensions(
@@ -15,5 +16,5 @@ class GroupKey:
     dimensions: tuple[tuple[str, Any], ...]
 
     @classmethod
-    def from_mapping(cls, dimensions: Mapping[str, Any]) -> "GroupKey":
+    def from_mapping(cls, dimensions: Mapping[str, Any]) -> GroupKey:
         return cls(dimensions=canonicalize_group_dimensions(dimensions))

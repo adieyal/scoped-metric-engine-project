@@ -5,9 +5,16 @@ from .aggregation import (
     AggregationSpec,
     MetricAggregationPolicy,
 )
+from .dependency_resolver import MetricEngineAdapter
 from .engine import ScopedMetricEngine
+from .exceptions import (
+    InvalidScopeError,
+    InvalidSliceError,
+    ScopedMetricEngineError,
+    UnsupportedAggregationError,
+)
 from .execution_context import ExecutionContext
-from .fact import Fact, Provenance, ResolutionProvenance
+from .fact import Fact, ResolutionProvenance, SourceProvenance
 from .fact_key import FactKey
 from .fact_store import InMemoryFactStore
 from .fetch_plan import FactDemand, FetchPlan, FetchPlanner
@@ -41,13 +48,16 @@ __all__ = [
     "FetchResponse",
     "GroupKey",
     "InMemoryFactStore",
+    "InvalidScopeError",
+    "InvalidSliceError",
     "MetricAggregationPolicy",
+    "MetricEngineAdapter",
     "PopulationResolver",
     "PopulationRow",
     "PopulationSpec",
     "PrimitiveFactFetcher",
     "PrimitiveMetricSemantics",
-    "Provenance",
+    "SourceProvenance",
     "RawFetchRow",
     "ResolutionGrain",
     "ResolutionIssue",
@@ -58,7 +68,9 @@ __all__ = [
     "Scope",
     "ScopeRef",
     "ScopedMetricEngine",
+    "ScopedMetricEngineError",
     "ScopedMetricMetadata",
     "ScopedMetricRegistry",
     "Slice",
+    "UnsupportedAggregationError",
 ]

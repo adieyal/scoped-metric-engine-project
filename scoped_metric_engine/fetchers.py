@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
-from .fact import Provenance
+from .fact import SourceProvenance
 from .fetch_request import FetchRequest
 from .issues import ResolutionIssue
 
@@ -19,12 +20,11 @@ class RawFetchRow:
 class FetchResponse:
     request: FetchRequest
     rows: list[RawFetchRow]
-    provenance: Provenance | None = None
+    provenance: SourceProvenance | None = None
     issues: list[ResolutionIssue] = field(default_factory=list)
 
 
 class PrimitiveFactFetcher(Protocol):
     family: str
 
-    def fetch(self, request: FetchRequest) -> FetchResponse:
-        ...
+    def fetch(self, request: FetchRequest) -> FetchResponse: ...

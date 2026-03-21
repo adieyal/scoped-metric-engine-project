@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 from .fact_key import FactKey
 from .fact_store import FactStore
@@ -21,8 +21,8 @@ def combine_row_completeness(metric_completenesses: Sequence[Completeness]) -> C
 
 def assemble_rows(
     scope: Scope,
-    group_keys: Sequence[GroupKey],
-    row_dimensions: Mapping[GroupKey, Mapping[str, object]],
+    group_keys: Sequence[GroupKey | None],
+    row_dimensions: Mapping[GroupKey | None, Mapping[str, object]],
     metrics: Sequence[str],
     fact_store: FactStore,
 ) -> list[ResultRow]:

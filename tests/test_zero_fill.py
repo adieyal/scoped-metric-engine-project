@@ -1,17 +1,10 @@
 from scoped_metric_engine.fact_key import FactKey
 from scoped_metric_engine.population import PopulationSpec
 from scoped_metric_engine.zero_fill import build_zero_filled_facts
+from tests.conftest import FakePopulationResolver
 
 
 def test_zero_fill_only_applies_to_configured_metrics(metric_registry, grouped_scope):
-    population_rows = [
-        row for row in [
-            *([]),
-        ]
-    ]
-    # use resolver fixture behavior indirectly
-    from tests.conftest import FakePopulationResolver
-
     rows = FakePopulationResolver().resolve_population(grouped_scope, PopulationSpec("eligible"))
     existing = {FactKey("units_sold", grouped_scope, rows[0].group_key)}
     facts = build_zero_filled_facts(

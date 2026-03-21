@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from .fact import Fact, ResolutionProvenance
 from .fact_key import FactKey

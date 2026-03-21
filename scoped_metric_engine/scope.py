@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .exceptions import InvalidScopeError
 from .execution_context import ExecutionContext
 from .slice import Slice
 
@@ -12,7 +13,7 @@ class ResolutionGrain:
 
     def validate(self) -> None:
         if len(self.dimensions) > 1:
-            raise ValueError("V1 supports at most one grouping dimension")
+            raise InvalidScopeError("V1 supports at most one grouping dimension")
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,7 @@ class Scope:
     resolution_grain: ResolutionGrain
     execution_context: ExecutionContext = field(default_factory=ExecutionContext)
 
-    def canonicalized(self) -> "Scope":
+    def canonicalized(self) -> Scope:
         return Scope(
             slice=self.slice.canonicalized(),
             resolution_grain=ResolutionGrain(tuple(self.resolution_grain.dimensions)),

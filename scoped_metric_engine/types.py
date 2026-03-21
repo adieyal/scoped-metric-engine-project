@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal
-from typing import Any, Literal, Mapping, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 Completeness: TypeAlias = Literal["complete", "partial", "unavailable"]
 MetricKind: TypeAlias = Literal["primitive", "derived"]

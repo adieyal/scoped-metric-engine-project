@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from .exceptions import InvalidSliceError
+
 
 def canonicalize_filters(
     filters: tuple[tuple[str, Any], ...] | None,
@@ -20,7 +22,7 @@ class Slice:
     end_date: date
     filters: tuple[tuple[str, Any], ...] = ()
 
-    def canonicalized(self) -> "Slice":
+    def canonicalized(self) -> Slice:
         return Slice(
             entity_ids=tuple(sorted(self.entity_ids)),
             start_date=self.start_date,
@@ -30,6 +32,6 @@ class Slice:
 
     def validate(self) -> None:
         if not self.entity_ids:
-            raise ValueError("Slice.entity_ids must not be empty")
+            raise InvalidSliceError("Slice.entity_ids must not be empty")
         if self.start_date > self.end_date:
-            raise ValueError("Slice.start_date must be <= end_date")
+            raise InvalidSliceError("Slice.start_date must be <= end_date")

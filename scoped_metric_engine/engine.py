@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Mapping, Sequence
+from collections.abc import Mapping, Sequence
 
 from .aggregation import (
     AggregationInputValue,
@@ -9,10 +9,12 @@ from .aggregation import (
 )
 from .compute import compute_metrics_for_row
 from .dependency_resolver import MetricEngineAdapter
+from .exceptions import UnsupportedAggregationError
 from .fact_key import FactKey
 from .fact_store import FactStore
 from .fetch_plan import FactDemand, FetchPlanner
 from .fetchers import PrimitiveFactFetcher
+from .group_key import GroupKey
 from .issues import ResolutionIssue
 from .metric_metadata import ScopedMetricRegistry
 from .normalization import normalize_fetch_response_to_facts
@@ -50,15 +52,15 @@ class ScopedMetricEngine:
         population_rows = list(self._population_resolver.resolve_population(scope, request.population))
         population_by_key = {row.group_key: row for row in population_rows}
 
-        primitive_metrics, all_metrics, metric_issues = self._classify_and_validate_metrics(request.metrics)
+        primitive_metrics, valid_metrics, metric_issues = self._classify_and_validate_metrics(request.metrics)
         issues.extend(metric_issues)
 
-        required_primitive_metrics = self._discover_required_primitive_metrics(request.metrics)
+        required_primitive_metrics = self._discover_required_primitive_metrics(valid_metrics, primitive_metrics)
         demands = self._build_demands(scope, required_primitive_metrics)
         fetch_plan = self._fetch_planner.build_fetch_plan(demands)
 
-        inferred_row_dimensions: dict = {}
-        observed_group_keys: set = set()
+        inferred_row_dimensions: dict[GroupKey, dict[str, object]] = {}
+        observed_group_keys: set[GroupKey] = set()
 
         for fetch_request in fetch_plan.requests:
             fetcher = self._fetchers_by_family.get(fetch_request.family)
@@ -106,11 +108,14 @@ class ScopedMetricEngine:
             observed_group_keys=observed_group_keys,
         )
 
+        derived_metrics = sorted(m for m in valid_metrics if self._metric_registry.get(m).kind == "derived")
+        context_metrics = sorted(set(valid_metrics) | set(required_primitive_metrics))
         for group_key in group_keys:
             derived_facts = compute_metrics_for_row(
                 scope=scope,
                 group_key=group_key,
-                metrics=sorted(set(all_metrics) | set(required_primitive_metrics)),
+                targets=derived_metrics,
+                context_metrics=context_metrics,
                 metric_engine=self._metric_engine,
                 fact_store=self._fact_store,
                 allow_partial=request.calculation_options.allow_partial,
@@ -129,7 +134,7 @@ class ScopedMetricEngine:
             scope=scope,
             group_keys=group_keys,
             row_dimensions=row_dimensions,
-            metrics=request.metrics,
+            metrics=valid_metrics,
             fact_store=self._fact_store,
         )
 
@@ -169,7 +174,9 @@ class ScopedMetricEngine:
                         AggregationInputValue(
                             metric=metric_name,
                             value=self._extract_scalar_value(resolved_tables[scope_ref.label], metric_name),
-                            completeness=self._extract_scalar_completeness(resolved_tables[scope_ref.label], metric_name),
+                            completeness=self._extract_scalar_completeness(
+                                resolved_tables[scope_ref.label], metric_name
+                            ),
                         )
                         for scope_ref in request.scopes
                     ]
@@ -181,7 +188,10 @@ class ScopedMetricEngine:
                 values=per_scope_values,
                 policy=policy,
                 recompute_inputs=recompute_inputs,
+                metric_engine=self._metric_engine,
+                calculation_options=request.calculation_options,
             )
+            issues.extend(metric_issues)
             values.append(
                 AggregatedMetricValue(
                     metric=operator.metric,
@@ -198,7 +208,9 @@ class ScopedMetricEngine:
             issues=issues,
         )
 
-    def _classify_and_validate_metrics(self, metrics: Sequence[str]) -> tuple[list[str], list[str], list[ResolutionIssue]]:
+    def _classify_and_validate_metrics(
+        self, metrics: Sequence[str]
+    ) -> tuple[list[str], list[str], list[ResolutionIssue]]:
         primitive: list[str] = []
         all_valid: list[str] = []
         issues: list[ResolutionIssue] = []
@@ -212,20 +224,20 @@ class ScopedMetricEngine:
                 primitive.append(metric)
         return primitive, all_valid, issues
 
-    def _discover_required_primitive_metrics(self, metrics: Sequence[str]) -> list[str]:
-        primitives: set[str] = set()
-        for metric in metrics:
-            if not self._metric_registry.has(metric):
-                continue
-            metadata = self._metric_registry.get(metric)
-            if metadata.kind == "primitive":
-                primitives.add(metric)
-            else:
-                dependencies = self._metric_engine.get_dependencies(metric)
-                for dep in dependencies:
-                    if self._metric_registry.has(dep) and self._metric_registry.get(dep).kind == "primitive":
-                        primitives.add(dep)
-        return sorted(primitives)
+    def _discover_required_primitive_metrics(
+        self, valid_metrics: Sequence[str], primitive_metrics: Sequence[str]
+    ) -> list[str]:
+        needed = self._metric_engine.inputs_needed_for(set(valid_metrics))
+        # Union with explicitly requested primitives so that direct primitive
+        # requests are always fetched even if inputs_needed_for() omits them.
+        needed = needed | set(primitive_metrics)
+        primitives: list[str] = []
+        for metric in sorted(needed):
+            if self._metric_registry.has(metric):
+                metadata = self._metric_registry.get(metric)
+                if metadata.kind == "primitive":
+                    primitives.append(metric)
+        return primitives
 
     def _build_demands(self, scope: Scope, primitive_metrics: Sequence[str]) -> list[FactDemand]:
         demands: list[FactDemand] = []
@@ -236,15 +248,26 @@ class ScopedMetricEngine:
             demands.append(FactDemand(key=FactKey(metric=metric, scope=scope, group_key=None), family=metadata.family))
         return demands
 
-    def _resolve_group_keys(self, scope: Scope, population_mode: str, population_rows: Sequence[PopulationRow], observed_group_keys: set) -> list:
+    def _resolve_group_keys(
+        self,
+        scope: Scope,
+        population_mode: str,
+        population_rows: Sequence[PopulationRow],
+        observed_group_keys: set[GroupKey],
+    ) -> list[GroupKey | None]:
         if not scope.resolution_grain.dimensions:
             return [None]
         if population_mode == "eligible":
             return [row.group_key for row in population_rows]
         return sorted(observed_group_keys, key=lambda gk: gk.dimensions)
 
-    def _merge_row_dimensions(self, group_keys: Sequence, population_by_key: Mapping, inferred_row_dimensions: Mapping) -> dict:
-        merged: dict = {}
+    def _merge_row_dimensions(
+        self,
+        group_keys: Sequence[GroupKey | None],
+        population_by_key: Mapping[GroupKey, PopulationRow],
+        inferred_row_dimensions: Mapping[GroupKey, dict[str, object]],
+    ) -> dict[GroupKey | None, dict[str, object]]:
+        merged: dict[GroupKey | None, dict[str, object]] = {}
         for group_key in group_keys:
             dimensions = {}
             if group_key in population_by_key:
@@ -255,11 +278,25 @@ class ScopedMetricEngine:
 
     def _extract_scalar_value(self, table: ResolvedMetricTable, metric: str):
         if len(table.rows) != 1:
-            raise ValueError("Aggregation over grouped rows is not supported in v1")
-        return table.rows[0].metrics[metric]
+            raise UnsupportedAggregationError("Aggregation over grouped rows is not supported in v1")
+        value = table.rows[0].metrics[metric]
+        return _unwrap_numeric(value)
 
     def _extract_scalar_completeness(self, table: ResolvedMetricTable, metric: str):
         if len(table.rows) != 1:
-            raise ValueError("Aggregation over grouped rows is not supported in v1")
-        metric_value = table.rows[0].metrics[metric]
-        return "unavailable" if metric_value is None else table.rows[0].completeness
+            raise UnsupportedAggregationError("Aggregation over grouped rows is not supported in v1")
+        raw_value = self._extract_scalar_value(table, metric)
+        return "unavailable" if raw_value is None else table.rows[0].completeness
+
+
+def _unwrap_numeric(value: object) -> object:
+    """Extract a plain numeric from a FinancialValue-like object for aggregation."""
+    if value is None:
+        return None
+    if hasattr(value, "is_none") and value.is_none():
+        return None
+    if hasattr(value, "as_decimal"):
+        return value.as_decimal()
+    if hasattr(value, "as_float"):
+        return value.as_float()
+    return value

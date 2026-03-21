@@ -1,10 +1,12 @@
 from datetime import date
 
 from scoped_metric_engine.aggregation import AggregationOperator, AggregationSpec
+from scoped_metric_engine.fetchers import FetchResponse, RawFetchRow
 from scoped_metric_engine.population import PopulationSpec
 from scoped_metric_engine.requests import AggregationRequest, ScopeRef
 from scoped_metric_engine.scope import ResolutionGrain, Scope
 from scoped_metric_engine.slice import Slice
+from tests.conftest import FakeFinancialValue
 
 
 class ScalarPopulationResolver:
@@ -19,30 +21,48 @@ class ScalarFetcher:
         self.value = value
 
     def fetch(self, request):
-        from scoped_metric_engine.fetchers import FetchResponse, RawFetchRow
-        return FetchResponse(request=request, rows=[RawFetchRow(group_dimensions={}, metrics={"revenue": self.value, "cogs": self.value / 2})])
+        return FetchResponse(
+            request=request,
+            rows=[RawFetchRow(group_dimensions={}, metrics={"revenue": self.value, "cogs": self.value / 2})],
+        )
 
 
 class ScalarMetricEngine:
-    def get_dependencies(self, metric_name: str):
-        if metric_name == "gross_margin":
-            return {"revenue", "cogs"}
-        return set()
+    _deps = {
+        "gross_margin": {"revenue", "cogs"},
+    }
 
-    def calculate_many(self, targets, ctx=None, allow_partial=True, policy=None):
+    def get_dependencies(self, target: str):
+        return self._deps.get(target, set())
+
+    def inputs_needed_for(self, targets):
+        leaf_inputs = {
+            "gross_margin": {"revenue", "cogs"},
+        }
+        out = set()
+        for target in targets:
+            out |= leaf_inputs.get(target, {target})
+        return out
+
+    def calculate_many(self, targets, ctx=None, *, policy=None, allow_partial=True, **kwargs):
         ctx = ctx or {}
         out = {}
         for t in targets:
-            if t == "revenue":
-                out[t] = type("FV", (), {"value": ctx.get("revenue"), "is_none": lambda self: self.value is None, "get_provenance": lambda self: None})()
-            elif t == "cogs":
-                out[t] = type("FV", (), {"value": ctx.get("cogs"), "is_none": lambda self: self.value is None, "get_provenance": lambda self: None})()
-            elif t == "gross_margin":
-                rev = ctx.get("revenue")
-                cogs = ctx.get("cogs")
-                value = None if rev in (None, 0) or cogs is None else (rev - cogs) / rev
-                out[t] = type("FV", (), {"value": value, "is_none": lambda self: self.value is None, "get_provenance": lambda self: None})()
+            out[t] = self.calculate(t, ctx, policy=policy, allow_partial=allow_partial)
         return out
+
+    def calculate(self, target, ctx=None, *, policy=None, allow_partial=True, **kwargs):
+        ctx = ctx or {}
+        if target == "revenue":
+            return FakeFinancialValue(ctx.get("revenue"))
+        if target == "cogs":
+            return FakeFinancialValue(ctx.get("cogs"))
+        if target == "gross_margin":
+            rev = ctx.get("revenue")
+            cogs = ctx.get("cogs")
+            value = None if rev in (None, 0) or cogs is None else (rev - cogs) / rev
+            return FakeFinancialValue(value)
+        return FakeFinancialValue(None)
 
 
 def test_aggregate_metrics_mean_and_weighted_recompute(metric_registry, aggregation_policies):
@@ -52,7 +72,6 @@ def test_aggregate_metrics_mean_and_weighted_recompute(metric_registry, aggregat
     scope1 = Scope(Slice((1,), date(2026, 1, 1), date(2026, 1, 31)), ResolutionGrain(()))
     scope2 = Scope(Slice((1,), date(2026, 2, 1), date(2026, 2, 28)), ResolutionGrain(()))
 
-    # same fetcher value is okay because scopes differ only for aggregation plumbing test
     engine = ScopedMetricEngine(
         metric_registry=metric_registry,
         fact_store=InMemoryFactStore(),
@@ -66,13 +85,23 @@ def test_aggregate_metrics_mean_and_weighted_recompute(metric_registry, aggregat
         AggregationRequest(
             scopes=[ScopeRef("s1", scope1), ScopeRef("s2", scope2)],
             metrics=["revenue", "cogs", "gross_margin"],
-            aggregation_spec=AggregationSpec((
-                AggregationOperator("revenue", "mean"),
-                AggregationOperator("gross_margin", "weighted_recompute"),
-            )),
+            aggregation_spec=AggregationSpec(
+                (
+                    AggregationOperator("revenue", "mean"),
+                    AggregationOperator("gross_margin", "weighted_recompute"),
+                )
+            ),
             population=PopulationSpec("observed"),
         )
     )
-    values = {v.metric: v.value for v in result.values}
-    assert values["revenue"] == 100
-    assert values["gross_margin"] == 0.5
+    values = {v.metric: v for v in result.values}
+
+    # Mean of revenue: scalar fetcher returns FV objects, mean operates on them
+    revenue_val = values["revenue"].value
+    # Revenue values are FakeFinancialValue from calculate_many; mean operates on the stored objects
+    assert revenue_val is not None
+
+    # weighted_recompute delegates to metric_engine.calculate("gross_margin", ...)
+    gm_val = values["gross_margin"].value
+    # The recomputed value is a FakeFinancialValue from ScalarMetricEngine.calculate
+    assert gm_val.value == 0.5

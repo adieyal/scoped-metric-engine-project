@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+
 from .fact import Fact, ResolutionProvenance
 from .fact_key import FactKey
+from .fetch_request import FetchRequest
 from .fetchers import FetchResponse
 from .group_key import GroupKey
 from .scope import Scope
@@ -42,6 +45,18 @@ def normalize_fetch_response_to_facts(
     return facts, row_dimensions
 
 
-def _fetch_request_id(request: FetchResponse | object) -> str:
-    req = request if isinstance(request, FetchResponse) else request
-    return hex(abs(hash(req)))[2:]
+def _fetch_request_id(request: FetchRequest) -> str:
+    """Produce a deterministic ID for a FetchRequest using SHA-256.
+
+    Python's built-in hash() is randomised across processes (PYTHONHASHSEED),
+    so we derive the ID from stable, explicit fields instead.
+    """
+    parts = (
+        request.family,
+        repr(request.slice),
+        repr(request.resolution_grain),
+        repr(request.execution_context),
+        repr(request.metrics),
+    )
+    digest = hashlib.sha256("|".join(parts).encode()).hexdigest()
+    return digest[:16]

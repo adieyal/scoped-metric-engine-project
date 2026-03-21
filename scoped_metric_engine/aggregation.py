@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from statistics import mean
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from .issues import ResolutionIssue
 from .types import AggregationOp, Completeness
+
+if TYPE_CHECKING:
+    from .dependency_resolver import MetricEngineAdapter
+    from .requests import CalculationOptions
 
 
 @dataclass(frozen=True)
@@ -46,17 +51,31 @@ def aggregate_values(
     values: Sequence[AggregationInputValue],
     policy: MetricAggregationPolicy | None,
     recompute_inputs: Mapping[str, Sequence[AggregationInputValue]] | None = None,
+    metric_engine: MetricEngineAdapter | None = None,
+    calculation_options: CalculationOptions | None = None,
 ) -> tuple[Any, Completeness, list[ResolutionIssue]]:
+    """Aggregate per-scope metric values using the given operator.
+
+    ``sum``, ``mean``, ``min``, and ``max`` operate on unwrapped plain
+    numerics — the orchestration layer is responsible for extracting raw
+    numbers before passing them in.
+
+    ``weighted_recompute`` delegates formula recomputation back to
+    ``metric_engine.calculate()``, which returns domain value objects
+    (e.g. FinancialValue).
+    """
     issues: list[ResolutionIssue] = []
 
     if policy is None or operator.op not in policy.supported_ops:
         return (
             None,
             "unavailable",
-            [ResolutionIssue(
-                code="UNSUPPORTED_AGGREGATION",
-                message=f"Aggregation '{operator.op}' not supported for metric '{operator.metric}'",
-            )],
+            [
+                ResolutionIssue(
+                    code="UNSUPPORTED_AGGREGATION",
+                    message=f"Aggregation '{operator.op}' not supported for metric '{operator.metric}'",
+                )
+            ],
         )
 
     usable = [v.value for v in values if v.completeness != "unavailable"]
@@ -74,24 +93,23 @@ def aggregate_values(
     if operator.op == "max":
         return max(usable), completeness, issues
     if operator.op == "weighted_recompute":
-        if not policy.recompute_from or recompute_inputs is None:
-            return (
-                None,
-                "unavailable",
-                [ResolutionIssue(
-                    code="UNSUPPORTED_AGGREGATION",
-                    message=f"Missing recompute inputs for metric '{operator.metric}'",
-                )],
-            )
-        return _recompute_weighted_metric(operator.metric, recompute_inputs)
+        return _recompute_weighted_metric(
+            operator.metric,
+            policy,
+            recompute_inputs,
+            metric_engine=metric_engine,
+            calculation_options=calculation_options,
+        )
 
     return (
         None,
         "unavailable",
-        [ResolutionIssue(
-            code="UNSUPPORTED_AGGREGATION",
-            message=f"Unknown aggregation op '{operator.op}'",
-        )],
+        [
+            ResolutionIssue(
+                code="UNSUPPORTED_AGGREGATION",
+                message=f"Unknown aggregation op '{operator.op}'",
+            )
+        ],
     )
 
 
@@ -105,37 +123,70 @@ def _combine_aggregation_completeness(values: Sequence[AggregationInputValue]) -
 
 def _recompute_weighted_metric(
     metric: str,
-    recompute_inputs: Mapping[str, Sequence[AggregationInputValue]],
+    policy: MetricAggregationPolicy,
+    recompute_inputs: Mapping[str, Sequence[AggregationInputValue]] | None,
+    *,
+    metric_engine: MetricEngineAdapter | None = None,
+    calculation_options: CalculationOptions | None = None,
 ) -> tuple[Any, Completeness, list[ResolutionIssue]]:
-    issues: list[ResolutionIssue] = []
-
-    if metric != "gross_margin":
+    if not policy.recompute_from or recompute_inputs is None:
         return (
             None,
             "unavailable",
-            [ResolutionIssue(
-                code="UNSUPPORTED_AGGREGATION",
-                message=f"weighted_recompute not implemented for '{metric}'",
-            )],
+            [
+                ResolutionIssue(
+                    code="UNSUPPORTED_AGGREGATION",
+                    message=f"Missing recompute inputs for metric '{metric}'",
+                )
+            ],
         )
 
-    revenue_values = recompute_inputs.get("revenue", [])
-    cogs_values = recompute_inputs.get("cogs", [])
-    if not revenue_values or not cogs_values:
+    if metric_engine is None:
         return (
             None,
             "unavailable",
-            [ResolutionIssue(
-                code="UNSUPPORTED_AGGREGATION",
-                message="Missing revenue/cogs inputs for gross_margin recompute",
-            )],
+            [
+                ResolutionIssue(
+                    code="UNSUPPORTED_AGGREGATION",
+                    message=f"No metric engine provided for recompute of '{metric}'",
+                )
+            ],
         )
 
-    revenue_total = sum(v.value for v in revenue_values if v.completeness != "unavailable")
-    cogs_total = sum(v.value for v in cogs_values if v.completeness != "unavailable")
-    if revenue_total == 0:
-        return None, "unavailable", issues
+    # Aggregate each input metric, then delegate formula to metric engine.
+    aggregated_ctx: dict[str, Any] = {}
+    all_input_values: list[AggregationInputValue] = []
+    for input_metric in policy.recompute_from:
+        input_values = recompute_inputs.get(input_metric, [])
+        all_input_values.extend(input_values)
+        usable = [v.value for v in input_values if v.completeness != "unavailable"]
+        if not usable:
+            return (
+                None,
+                "unavailable",
+                [
+                    ResolutionIssue(
+                        code="UNSUPPORTED_AGGREGATION",
+                        message=f"No usable values for recompute input '{input_metric}'",
+                    )
+                ],
+            )
+        aggregated_ctx[input_metric] = sum(usable)
 
-    completeness = _combine_aggregation_completeness([*revenue_values, *cogs_values])
-    gross_profit = revenue_total - cogs_total
-    return gross_profit / revenue_total, completeness, issues
+    calc_policy = calculation_options.policy if calculation_options else None
+    allow_partial = calculation_options.allow_partial if calculation_options else True
+
+    value = metric_engine.calculate(
+        metric,
+        ctx=aggregated_ctx,
+        policy=calc_policy,
+        allow_partial=allow_partial,
+    )
+
+    completeness: Completeness
+    if hasattr(value, "is_none") and value.is_none():
+        completeness = "unavailable"
+    else:
+        completeness = _combine_aggregation_completeness(all_input_values)
+
+    return value, completeness, []
